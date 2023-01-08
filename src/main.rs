@@ -6,6 +6,8 @@ use mqtt::SimpleMQTT;
 use serial::SimpleSerial;
 use tracing::{debug, info, warn};
 
+use crate::simulation::Simulation;
+
 mod logger;
 mod mqtt;
 mod protocol;
@@ -24,17 +26,37 @@ struct Cli {
     /// Serial baud rate, default to the microbit default baud rate
     #[clap(short = 'b', long, env, default_value = "115200")]
     pub serial_baud_rate: u32,
+    #[clap(short, long = "verbose", action = clap::ArgAction::Count)]
+    pub verbosity: u8,
+    #[clap(subcommand)]
+    pub subcommand: SubCommand,
+}
+
+#[derive(Debug, Parser)]
+enum SubCommand {
+    /// Bridge to MQTT
+    Mqtt(CliMqttBridge),
+    /// Bridge to network
+    Network(CliNetworkBridge),
+}
+
+#[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
+struct CliMqttBridge {
     /// MQTT server host
     #[clap(short = 'H', long, env, default_value = "localhost")]
     pub mqtt_host: String,
     /// MQTT server port
     #[clap(short = 'P', long, env, default_value = "1883")]
     pub mqtt_port: u16,
+}
+
+#[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
+struct CliNetworkBridge {
     /// Simulation server
     #[clap(short = 's', long, env, default_value = "localhost:8080")]
     pub simulation_server: String,
-    #[clap(short, long = "verbose", action = clap::ArgAction::Count)]
-    verbosity: u8,
 }
 
 #[tokio::main]
@@ -58,12 +80,19 @@ async fn main() -> Result<()> {
         "Connected to serial port"
     );
 
-    let mut mqtt = SimpleMQTT::new(&args.mqtt_host, args.mqtt_port).await?;
-    info!(
-        mqtt = args.mqtt_host,
-        port = args.mqtt_port,
-        "Connected to MQTT server"
-    );
+    match args.subcommand {
+        SubCommand::Mqtt(args) => {
+            let mut mqtt = SimpleMQTT::new(&args.mqtt_host, args.mqtt_port).await?;
+            info!(
+                mqtt = args.mqtt_host,
+                port = args.mqtt_port,
+                "Connected to MQTT server"
+            );
+        }
+        SubCommand::Network(args) => {
+            let mut simulation = Simulation::new(&args.simulation_server)?;
+        }
+    }
 
     while let Ok(line) = serial.read_line() {
         if let Ok(pfp_req) = protocol_parser::parse(&line) {
