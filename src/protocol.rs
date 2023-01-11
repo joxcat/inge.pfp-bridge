@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PAYLOAD_SIZE: usize = 32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Command {
     HeloP,
     OlehP,
@@ -38,6 +38,12 @@ impl From<Command> for u8 {
             Command::Add => 0x0C,
             Command::Del => 0x0D,
         }
+    }
+}
+
+impl PartialEq<Command> for u8 {
+    fn eq(&self, other: &Command) -> bool {
+        *self == (u8::from(*other))
     }
 }
 

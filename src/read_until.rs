@@ -1,7 +1,5 @@
 use std::io::{BufRead, ErrorKind};
 
-use tracing::debug;
-
 pub trait ReadUntilPat {
     fn read_until_pat<const L: usize>(
         &mut self,
@@ -33,7 +31,6 @@ impl<R: BufRead + ?Sized> ReadUntilPat for R {
                         (true, i + 1)
                     }
                     None => {
-                        debug!("PAT NOT FOUND");
                         buf.extend_from_slice(available);
                         (false, available.len())
                     }

@@ -1,7 +1,4 @@
-use std::{
-    io::{BufRead, BufReader},
-    time::Duration,
-};
+use std::{io::BufReader, time::Duration};
 
 use tokio_serial::FlowControl;
 
@@ -16,6 +13,8 @@ pub struct SimpleSerial {
 impl SimpleSerial {
     pub fn new(path: &str, baud_rate: u32) -> crate::Result<Self> {
         let port = tokio_serial::new(path, baud_rate)
+            .baud_rate(baud_rate)
+            .flow_control(FlowControl::Software)
             .timeout(SERIAL_TIMEOUT)
             .open()?;
         let reader = BufReader::new(port);
@@ -25,7 +24,7 @@ impl SimpleSerial {
 
     pub fn read_line(&mut self) -> crate::Result<Vec<u8>> {
         let mut line = Vec::new();
-        self.reader.read_until(b'\n', &mut line)?;
+        self.reader.read_until_pat(b"\r\n", &mut line)?;
         Ok(line)
     }
 }

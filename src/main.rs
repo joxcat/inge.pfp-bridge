@@ -1,4 +1,4 @@
-use std::{env::set_var, io::BufRead};
+use std::env::set_var;
 
 use clap::Parser;
 use logger::setup_logger;
@@ -6,7 +6,7 @@ use mqtt::SimpleMQTT;
 use serial::SimpleSerial;
 use tracing::{debug, info, warn};
 
-use crate::simulation::Simulation;
+use crate::{protocol::Command, simulation::Simulation};
 
 mod logger;
 mod mqtt;
@@ -24,8 +24,8 @@ struct Cli {
     /// Serial port path
     #[clap(short = 'p', long, env)]
     pub serial_port: String,
-    /// Serial baud rate, default to the microbit default baud rate
-    #[clap(short = 'b', long, env, default_value = "115200")]
+    /// Serial baud rate
+    #[clap(short = 'b', long, env, default_value = "38400")]
     pub serial_baud_rate: u32,
     #[clap(short, long = "verbose", action = clap::ArgAction::Count)]
     pub verbosity: u8,
@@ -52,6 +52,9 @@ struct CliMqttBridge {
     /// MQTT server port
     #[clap(short = 'P', long, env, default_value = "1883")]
     pub mqtt_port: u16,
+    /// MQTT channel
+    #[clap(short = 'C', long, env, default_value = "microbit")]
+    pub mqtt_channel: String,
 }
 
 #[derive(Debug, Parser)]
@@ -91,6 +94,27 @@ async fn main() -> Result<()> {
                 port = args.mqtt_port,
                 "Connected to MQTT server"
             );
+
+            while let Ok(line) = serial.read_line() {
+                if let Ok((_, request)) = protocol_parser::parse(&line) {
+                    if request.command_id == Command::Push {
+                        if let Ok((_, (device_serial, intensity))) =
+                            protocol_parser::parse_push_payload(&request.payload)
+                        {
+                            mqtt.push(
+                                &args.mqtt_channel,
+                                &format!("telegraf id={device_serial},intensity={intensity}"),
+                            )
+                            .await?;
+                        }
+                    }
+                } else {
+                    warn!(
+                        line = String::from_utf8(line).unwrap_or_else(|_| String::new()),
+                        "Invalid request"
+                    );
+                }
+            }
         }
         SubCommand::Network(args) => {
             let mut simulation = Simulation::new(&args.simulation_server)?;
@@ -104,16 +128,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
-    // while let Ok(line) = serial.read_line() {
-    //     if let Ok(pfp_req) = protocol_parser::parse(&line) {
-    //     } else {
-    //         warn!("Failed to parse protocol");
-    //         debug!("Line: {:x?}", line);
-    //     }
-    //     // TODO: Send to mqtt
-    //     // mqtt.push("microbit", &line).await?;
-    // }
 
     Ok(())
 }

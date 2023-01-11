@@ -37,3 +37,8 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PFPRequest> {
         },
     ))
 }
+
+pub fn parse_push_payload(input: &[u8]) -> IResult<&[u8], (u32, u32)> {
+    let (input, result) = tuple((le_u32, le_u32))(input)?;
+    Ok((input, (result.0, result.1)))
+}
