@@ -3,6 +3,10 @@ use std::{
     time::Duration,
 };
 
+use tokio_serial::FlowControl;
+
+use crate::read_until::ReadUntilPat;
+
 const SERIAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SimpleSerial {

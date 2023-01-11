@@ -1,4 +1,4 @@
-use std::env::set_var;
+use std::{env::set_var, io::BufRead};
 
 use clap::Parser;
 use logger::setup_logger;
@@ -12,6 +12,7 @@ mod logger;
 mod mqtt;
 mod protocol;
 mod protocol_parser;
+mod read_until;
 mod serial;
 mod simulation;
 
@@ -38,6 +39,8 @@ enum SubCommand {
     Mqtt(CliMqttBridge),
     /// Bridge to network
     Network(CliNetworkBridge),
+    /// Read UART
+    Debug,
 }
 
 #[derive(Debug, Parser)]
@@ -92,17 +95,25 @@ async fn main() -> Result<()> {
         SubCommand::Network(args) => {
             let mut simulation = Simulation::new(&args.simulation_server)?;
         }
+        SubCommand::Debug => {
+            while let Ok(line) = serial.read_line() {
+                debug!(
+                    "{}",
+                    String::from_utf8(line).unwrap_or_else(|_| String::new())
+                );
+            }
+        }
     }
 
-    while let Ok(line) = serial.read_line() {
-        if let Ok(pfp_req) = protocol_parser::parse(&line) {
-        } else {
-            warn!("Failed to parse protocol");
-            debug!("Line: {:x?}", line);
-        }
-        // TODO: Send to mqtt
-        // mqtt.push("microbit", &line).await?;
-    }
+    // while let Ok(line) = serial.read_line() {
+    //     if let Ok(pfp_req) = protocol_parser::parse(&line) {
+    //     } else {
+    //         warn!("Failed to parse protocol");
+    //         debug!("Line: {:x?}", line);
+    //     }
+    //     // TODO: Send to mqtt
+    //     // mqtt.push("microbit", &line).await?;
+    // }
 
     Ok(())
 }
