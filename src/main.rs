@@ -1,20 +1,24 @@
-use std::env::set_var;
+use std::{env::set_var, sync::Arc};
 
 use clap::Parser;
 use logger::setup_logger;
 use mqtt::SimpleMQTT;
 use serial::SimpleSerial;
+use tokio::{sync::oneshot, sync::RwLock};
 use tracing::{debug, info, warn};
 
-use crate::{protocol::Command, simulation::Simulation};
+use crate::{
+    protocol::{Command, PFPRequest},
+    relay::Relay,
+};
 
 mod logger;
 mod mqtt;
 mod protocol;
 mod protocol_parser;
 mod read_until;
+mod relay;
 mod serial;
-mod simulation;
 
 pub type Result<T> = eyre::Result<T>;
 
@@ -35,17 +39,17 @@ struct Cli {
 
 #[derive(Debug, Parser)]
 enum SubCommand {
-    /// Bridge to MQTT
-    Mqtt(CliMqttBridge),
-    /// Bridge to network
-    Network(CliNetworkBridge),
+    /// Bridge as a relay
+    Relay(CliRelay),
+    /// Bridge to simulation
+    Simulator(CliSimulation),
     /// Read UART
     Debug,
 }
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
-struct CliMqttBridge {
+struct CliRelay {
     /// MQTT server host
     #[clap(short = 'H', long, env, default_value = "localhost")]
     pub mqtt_host: String,
@@ -53,16 +57,28 @@ struct CliMqttBridge {
     #[clap(short = 'P', long, env, default_value = "1883")]
     pub mqtt_port: u16,
     /// MQTT channel
-    #[clap(short = 'C', long, env, default_value = "microbit")]
+    #[clap(short = 'C', long, env, default_value = "microbit/manager")]
     pub mqtt_channel: String,
+    /// Do not connect to MQTT server
+    #[clap(long, env, action = clap::ArgAction::SetTrue)]
+    pub dry_mqtt: bool,
 }
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
-struct CliNetworkBridge {
-    /// Simulation server
-    #[clap(short = 's', long, env, default_value = "localhost:8080")]
-    pub simulation_server: String,
+struct CliSimulation {
+    /// MQTT server host
+    #[clap(short = 'H', long, env, default_value = "localhost")]
+    pub mqtt_host: String,
+    /// MQTT server port
+    #[clap(short = 'P', long, env, default_value = "1883")]
+    pub mqtt_port: u16,
+    /// MQTT channel
+    #[clap(short = 'C', long, env, default_value = "microbit/simulator")]
+    pub mqtt_channel: String,
+    /// Do not connect to MQTT server
+    #[clap(long, env, action = clap::ArgAction::SetTrue)]
+    pub dry_mqtt: bool,
 }
 
 #[tokio::main]
@@ -79,6 +95,21 @@ async fn main() -> Result<()> {
     }
     setup_logger();
 
+    let (shutdown_trigger, mut shutdown_signal) = oneshot::channel::<()>();
+    {
+        tokio::spawn(async move {
+            debug!("Spawned Ctrl-C handler task");
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install CTRL+C signal handler");
+
+            warn!("Received Ctrl-C, shutting down");
+            shutdown_trigger
+                .send(())
+                .expect("Failed to send stop signal");
+        });
+    }
+
     let mut serial = SimpleSerial::new(&args.serial_port, args.serial_baud_rate)?;
     info!(
         serial = args.serial_port,
@@ -87,44 +118,74 @@ async fn main() -> Result<()> {
     );
 
     match args.subcommand {
-        SubCommand::Mqtt(args) => {
-            let mut mqtt = SimpleMQTT::new(&args.mqtt_host, args.mqtt_port).await?;
+        SubCommand::Relay(args) => {
+            let mqtt = Arc::new(RwLock::new(
+                SimpleMQTT::new(&args.mqtt_host, args.mqtt_port, args.dry_mqtt).await?,
+            ));
             info!(
                 mqtt = args.mqtt_host,
                 port = args.mqtt_port,
                 "Connected to MQTT server"
             );
+            let serial = Arc::new(RwLock::new(serial));
+            let mqtt_channel = Arc::new(args.mqtt_channel);
 
-            while let Ok(line) = serial.read_line() {
-                if let Ok((_, request)) = protocol_parser::parse(&line) {
-                    if request.command_id == Command::Push {
-                        if let Ok((_, (device_serial, intensity))) =
-                            protocol_parser::parse_push_payload(&request.payload)
-                        {
-                            mqtt.push(
-                                &args.mqtt_channel,
-                                &format!("telegraf id={device_serial},intensity={intensity}"),
-                            )
-                            .await?;
+            Relay::new(
+                1,
+                serial,
+                move |request: Arc<PFPRequest>| {
+                    let mqtt_channel = mqtt_channel.clone();
+                    let mqtt = mqtt.clone();
+                    Box::pin(async move {
+                        if request.command_id == Command::Push {
+                            if let Ok((_, (device_serial, intensity))) =
+                                protocol_parser::parse_push_payload(&request.payload)
+                            {
+                                mqtt.write()
+                                    .await
+                                    .push(
+                                        &mqtt_channel,
+                                        &format!(
+                                            "telegraf serial={device_serial},intensity={intensity}"
+                                        ),
+                                    )
+                                    .await?;
+                            }
                         }
-                    }
-                } else {
-                    warn!(
-                        line = String::from_utf8(line).unwrap_or_else(|_| String::new()),
-                        "Invalid request"
-                    );
-                }
-            }
+                        Ok(())
+                    })
+                },
+                shutdown_signal,
+            )
+            .run()
+            .await?;
         }
-        SubCommand::Network(args) => {
-            let mut simulation = Simulation::new(&args.simulation_server)?;
+        SubCommand::Simulator(args) => {
+            let mut mqtt = SimpleMQTT::new(&args.mqtt_host, args.mqtt_port, args.dry_mqtt).await?;
+            info!(
+                mqtt = args.mqtt_host,
+                port = args.mqtt_port,
+                "Connected to MQTT server"
+            );
+            mqtt.subscribe(&args.mqtt_channel).await?;
+            mqtt.on_message(
+                |_message| {
+                    // TODO: Do something with MQTT
+                    Ok(())
+                },
+                shutdown_signal,
+            )
+            .await?;
         }
         SubCommand::Debug => {
-            while let Ok(line) = serial.read_line() {
-                debug!(
-                    "{}",
-                    String::from_utf8(line).unwrap_or_else(|_| String::new())
-                );
+            while shutdown_signal.try_recv().is_err() {
+                serial.write_buf(b"test").unwrap();
+                if let Ok(line) = serial.read_line() {
+                    debug!(
+                        "{}",
+                        String::from_utf8(line).unwrap_or_else(|_| String::new())
+                    );
+                }
             }
         }
     }

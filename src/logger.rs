@@ -6,3 +6,11 @@ pub fn setup_logger() {
         .with(EnvFilter::from_env("LOG_LEVEL"))
         .init();
 }
+
+pub fn slice_to_hex(slice: &[u8]) -> String {
+    slice
+        .iter()
+        .map(|&b| format!("0x{b:02x}"))
+        .collect::<Vec<String>>()
+        .join(",")
+}
