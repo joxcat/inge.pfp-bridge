@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use mosquitto_rs::Message;
 use tokio::sync::oneshot;
 use tracing::{debug, info};
@@ -51,7 +52,7 @@ impl SimpleMQTT {
 
     pub async fn on_message(
         &mut self,
-        on_message: impl Fn(Message) -> crate::Result<()>,
+        on_message: Box<dyn Fn(Message) -> BoxFuture<'static, crate::Result<()>>>,
         shutdown_signal: oneshot::Receiver<()>,
     ) -> crate::Result<()> {
         if !self.dry_run {
@@ -64,7 +65,7 @@ impl SimpleMQTT {
                         message = &mut subscriber.recv() => {
                             if let Ok(message) = message {
                                 debug!(topic = &message.topic, payload = String::from_utf8(message.payload.clone()).unwrap_or_else(|_| String::new()), "Received MQTT Message");
-                                on_message(message)?
+                                on_message(message).await?;
                             }
                         }
                         _ = &mut shutdown_signal => {

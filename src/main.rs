@@ -2,6 +2,7 @@ use std::{env::set_var, sync::Arc};
 
 use clap::Parser;
 use logger::setup_logger;
+use mosquitto_rs::Message;
 use mqtt::SimpleMQTT;
 use serial::SimpleSerial;
 use tokio::{sync::oneshot, sync::RwLock};
@@ -161,21 +162,40 @@ async fn main() -> Result<()> {
             .await?;
         }
         SubCommand::Simulator(args) => {
-            let mut mqtt = SimpleMQTT::new(&args.mqtt_host, args.mqtt_port, args.dry_mqtt).await?;
+            let mqtt = Arc::new(RwLock::new(
+                SimpleMQTT::new(&args.mqtt_host, args.mqtt_port, args.dry_mqtt).await?,
+            ));
             info!(
                 mqtt = args.mqtt_host,
                 port = args.mqtt_port,
                 "Connected to MQTT server"
             );
-            mqtt.subscribe(&args.mqtt_channel).await?;
-            mqtt.on_message(
-                |_message| {
-                    // TODO: Do something with MQTT
-                    Ok(())
-                },
-                shutdown_signal,
-            )
-            .await?;
+            mqtt.write().await.subscribe(&args.mqtt_channel).await?;
+
+            {
+                let mqtt_outer = mqtt.clone();
+                let mqtt_inner = mqtt.clone();
+                { mqtt_outer.write().await }
+                    .on_message(
+                        Box::new(move |message: Message| {
+                            let mqtt = mqtt_inner.clone();
+                            Box::pin(async move {
+                                // TODO: Do something with MQTT
+                                mqtt.write()
+                                    .await
+                                    .push(
+                                        "microbit/manager",
+                                        &String::from_utf8(message.payload)
+                                            .unwrap_or_else(|_| String::new()),
+                                    )
+                                    .await?;
+                                Ok::<_, eyre::Report>(())
+                            })
+                        }),
+                        shutdown_signal,
+                    )
+                    .await?;
+            }
         }
         SubCommand::Debug => {
             while shutdown_signal.try_recv().is_err() {
